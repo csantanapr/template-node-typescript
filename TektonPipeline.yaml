@@ -1,0 +1,402 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: node-typescript-task
+spec:
+  inputs:
+    resources:
+      - name: source
+        type: git
+  volumes:
+    - name: helm
+      emptyDir: {}
+  steps:
+    - name: setup
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          env | sort
+          ls
+          set -x
+          # Export project name, version, and build number to ./env-config
+          npm run env | grep "^npm_package_name" | sed "s/npm_package_name/IMAGE_NAME/g"  > ./env-config
+          npm run env | grep "^npm_package_version" | sed "s/npm_package_version/IMAGE_VERSION/g" >> ./env-config
+          echo "BUILD_NUMBER=$RANDOM" >> ./env-config
+          cat ./env-config
+    - name: build
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      envFrom:
+        - configMapRef:
+            name: pactbroker-config
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          npm install
+          npm run build
+    - name: test
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          npm test
+    - name: publish-pact
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      envFrom:
+        - configMapRef:
+            name: pactbroker-config
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          npm run pact:publish
+    - name: verify-pact
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      envFrom:
+        - configMapRef:
+            name: pactbroker-config
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          npm run pact:verify
+    - name: sonar-scan
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          if [[ -z "${SONARQUBE_URL}" ]]; then
+            echo "Skipping Sonar Qube step as Sonar Qube not installed or configured"
+            exit 0
+          fi
+
+          set -x
+          npm run sonarqube:scan
+    - name: build-image
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      workingdir: ${inputs.resources.source.path}
+      envFrom:
+        - configMapRef:
+            name: ibmcloud-config
+        - secretRef:
+            name: ibmcloud-apikey
+      env:
+        - name: HOME
+          value: /home/devops
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          . ./env-config
+
+          if [[ -z "${APIKEY}" ]]; then
+            echo "APIKEY is required"
+            exit 1
+          fi
+
+          if [[ -z "${RESOURCE_GROUP}" ]]; then
+            echo "RESOURCE_GROUP is required"
+            exit 1
+          fi
+
+          if [[ -z "${REGION}" ]]; then
+            echo "REGION is required"
+            exit 1
+          fi
+
+          if [[ -z "${REGISTRY_NAMESPACE}" ]]; then
+            echo "REGISTRY_NAMESPACE is required"
+            exit 1
+          fi
+
+          if [[ -z "${REGISTRY_URL}" ]]; then
+            echo "REGISTRY_URL is required"
+            exit 1
+          fi
+
+          if [[ -z "${IMAGE_NAME}" ]]; then
+            echo "IMAGE_NAME is required"
+            exit 1
+          fi
+
+          if [[ -z "${IMAGE_VERSION}" ]]; then
+            echo "IMAGE_VERSION is required"
+            exit 1
+          fi
+
+          echo "Checking registry namespace: ${REGISTRY_NAMESPACE}"
+          NS=$( ibmcloud cr namespaces | grep ${REGISTRY_NAMESPACE} ||: )
+          if [[ -z "${NS}" ]]; then
+              echo -e "Registry namespace ${REGISTRY_NAMESPACE} not found, creating it."
+              ibmcloud cr namespace-add ${REGISTRY_NAMESPACE}
+          else
+              echo -e "Registry namespace ${REGISTRY_NAMESPACE} found."
+          fi
+
+          echo -e "Existing images in registry"
+          ibmcloud cr images --restrict "${REGISTRY_NAMESPACE}/${IMAGE_NAME}"
+
+          echo -e "=========================================================================================="
+          echo -e "BUILDING CONTAINER IMAGE: ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION}"
+          set -x
+          ibmcloud cr build -t ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION} .
+          if [[ -n "${BUILD_NUMBER}" ]]; then
+              echo -e "BUILDING CONTAINER IMAGE: ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION}-${BUILD_NUMBER}"
+              ibmcloud cr image-tag ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION} ${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION}-${BUILD_NUMBER}
+          fi
+
+          echo -e "Available images in registry"
+          ibmcloud cr images --restrict ${REGISTRY_NAMESPACE}/${IMAGE_NAME}
+    - name: deploy-dev
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      workingdir: ${inputs.resources.source.path}
+      volumeMounts:
+        - name: helm
+          mountPath: /home/devops/.helm
+      envFrom:
+        - configMapRef:
+            name: ibmcloud-config
+        - secretRef:
+            name: ibmcloud-apikey
+      env:
+        - name: HOME
+          value: /home/devops
+        - name: CHART_NAME
+          value: template-node-typescript
+        - name: CHART_ROOT
+          value: chart
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+
+          . ./env-config
+          ENVIRONMENT_NAME=dev
+
+          CHART_PATH="${CHART_ROOT}/${CHART_NAME}"
+
+          echo "KUBECONFIG=${KUBECONFIG}"
+
+          RELEASE_NAME="${IMAGE_NAME}"
+          echo "RELEASE_NAME: $RELEASE_NAME"
+
+          if [[ -n "${BUILD_NUMBER}" ]]; then
+            IMAGE_VERSION="${IMAGE_VERSION}-${BUILD_NUMBER}"
+          fi
+
+          echo "INITIALIZING helm with client-only (no Tiller)"
+          helm init --client-only 1> /dev/null 2> /dev/null
+
+          echo "CHECKING CHART (lint)"
+          helm lint ${CHART_PATH}
+
+          IMAGE_REPOSITORY="${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}"
+          PIPELINE_IMAGE_URL="${REGISTRY_URL}/${REGISTRY_NAMESPACE}/${IMAGE_NAME}:${IMAGE_VERSION}"
+
+          # Update helm chart with repository and tag values
+          cat ${CHART_PATH}/values.yaml | \
+              yq w - nameOverride "${IMAGE_NAME}" | \
+              yq w - fullnameOverride "${IMAGE_NAME}" | \
+              yq w - image.repository "${IMAGE_REPOSITORY}" | \
+              yq w - image.tag "${IMAGE_VERSION}" > ./values.yaml.tmp
+          cp ./values.yaml.tmp ${CHART_PATH}/values.yaml
+          cat ${CHART_PATH}/values.yaml
+
+          # Using 'upgrade --install" for rolling updates. Note that subsequent updates will occur in the same namespace the release is currently deployed in, ignoring the explicit--namespace argument".
+          helm template ${CHART_PATH} \
+              --name ${RELEASE_NAME} \
+              --namespace ${ENVIRONMENT_NAME} \
+              --set ingress.tlsSecretName="${TLS_SECRET_NAME}" \
+              --set ingress.subdomain="${INGRESS_SUBDOMAIN}" > ./release.yaml
+
+          echo -e "Generated release yaml for: ${CLUSTER_NAME}/${ENVIRONMENT_NAME}."
+          cat ./release.yaml
+
+          echo -e "Deploying into: ${CLUSTER_NAME}/${ENVIRONMENT_NAME}."
+          kubectl apply -n ${ENVIRONMENT_NAME} -f ./release.yaml
+
+          # ${SCRIPT_ROOT}/deploy-checkstatus.sh ${ENVIRONMENT_NAME} ${IMAGE_NAME} ${IMAGE_REPOSITORY} ${IMAGE_VERSION}
+    - name: health-check
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      workingdir: ${inputs.resources.source.path}
+      envFrom:
+        - configMapRef:
+            name: ibmcloud-config
+        - secretRef:
+            name: ibmcloud-apikey
+      env:
+        - name: HOME
+          value: /home/devops
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          env | sort
+          set -x
+          cat ./env-config
+          . ./env-config
+
+          ENVIRONMENT_NAME=dev
+
+          INGRESS_NAME="${IMAGE_NAME}"
+          INGRESS_HOST=$(kubectl get ingress/${INGRESS_NAME} --namespace ${ENVIRONMENT_NAME} --output=jsonpath='{ .spec.rules[0].host }')
+          PORT='80'
+
+          # sleep for 10 seconds to allow enough time for the server to start
+          sleep 30
+
+          if [ $(curl -sL -w "%{http_code}\\n" "http://${INGRESS_HOST}:${PORT}/health" -o /dev/null --connect-timeout 3 --max-time 5 --retry 3 --retry-max-time 30) == "200" ]; then
+              echo "Successfully reached health endpoint: http://${INGRESS_HOST}:${PORT}/health"
+          echo "====================================================================="
+              else
+          echo "Could not reach health endpoint: http://${INGRESS_HOST}:${PORT}/health"
+              exit 1;
+          fi;
+    - name: package-helm-chart
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      workingdir: ${inputs.resources.source.path}
+      volumeMounts:
+        - name: helm
+          mountPath: /home/devops/.helm
+      envFrom:
+        - configMapRef:
+            name: ibmcloud-config
+        - configMapRef:
+            name: artifactory-config
+        - secretRef:
+            name: artifactory-access
+      env:
+        - name: HOME
+          value: /home/devops
+        - name: CHART_NAME
+          value: template-node-typescript
+        - name: CHART_ROOT
+          value: chart
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          set -x
+          env | sort
+
+          if [[ -z "${ARTIFACTORY_ENCRPT}" ]]; then
+            echo "REGISTRY_NAMESPACE is required"
+            exit 1
+          fi
+
+          . ./env-config
+
+          if [[ -n "${BUILD_NUMBER}" ]]; then
+            IMAGE_BUILD_VERSION="${IMAGE_VERSION}-${BUILD_NUMBER}"
+          fi
+
+          if [[ -z "${ARTIFACTORY_ENCRPT}" ]]; then
+              echo "Encrption key not available for Jenkins pipeline, please add it to the artifactory-access"
+              exit 1
+          fi
+
+
+
+          echo "Check if a Generic Local Repo has been created and retrieve the URL for it"
+          export URL=$(curl -s -u${ARTIFACTORY_USER}:${ARTIFACTORY_PASSWORD} -X GET "${ARTIFACTORY_URL}/artifactory/api/repositories?type=LOCAL" | jq -r '.[0].url')
+          echo ${URL}
+
+          # Check if the URL is valid and we can continue
+          if [ -n "${URL}" ]; then
+              echo "Successfully read Repo ${URL}"
+          else
+              echo "No Repository Created"
+              exit 1;
+          fi;
+
+          # Package Helm Chart
+          helm package --version ${IMAGE_BUILD_VERSION} chart/${CHART_NAME}
+
+          # Get the index and re index it with current Helm Chart
+          curl -u${ARTIFACTORY_USER}:${ARTIFACTORY_ENCRPT} -O "${URL}/${REGISTRY_NAMESPACE}/index.yaml"
+
+          if [[ $(cat index.yaml | jq '.errors[0].status') != "404" ]]; then
+              # Merge the chart index with the current index.yaml held in Artifactory
+              echo "Merging Chart into index.yaml for Chart Repository"
+              helm repo index . --url ${URL}/${REGISTRY_NAMESPACE} --merge index.yaml
+          else
+              # Dont Merge this is first time one is being created
+              echo "Creating a new index.yaml for Chart Repository"
+              rm index.yaml
+              helm repo index . --url ${URL}/${REGISTRY_NAMESPACE}
+          fi;
+
+          # Persist the Helm Chart in Artifactory for us by ArgoCD
+          curl -u${ARTIFACTORY_USER}:${ARTIFACTORY_ENCRPT} -i -vvv -T ${CHART_NAME}-${IMAGE_BUILD_VERSION}.tgz "${URL}/${REGISTRY_NAMESPACE}/${CHART_NAME}-${IMAGE_BUILD_VERSION}.tgz"
+
+          # Persist the Helm Chart in Artifactory for us by ArgoCD
+          curl -u${ARTIFACTORY_USER}:${ARTIFACTORY_ENCRPT} -i -vvv -T index.yaml "${URL}/${REGISTRY_NAMESPACE}/index.yaml"
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: node-typescript-pipeline
+spec:
+  resources:
+    - name: git-source
+      type: git
+  tasks:
+    - name: node-typescript
+      taskRef:
+        name: node-typescript-task
+      resources:
+        inputs:
+          - name: source
+            resource: git-source
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: node-typescript-git
+spec:
+  type: git
+  params:
+    - name: url
+      value: https://github.com/csantanapr/template-node-typescript.git
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: node-typescript-task-tmp
+spec:
+  inputs:
+    resources:
+      - name: source
+        type: git
+  steps:
+    - name: setup
+      image: node:11-stretch
+      workingdir: ${inputs.resources.source.path}
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          env | sort
+          ls
+          set -x
+          # Export project name, version, and build number to ./env-config
+          npm run env | grep "^npm_package_name" | sed "s/npm_package_name/IMAGE_NAME/g"  > ./env-config
+          npm run env | grep "^npm_package_version" | sed "s/npm_package_version/IMAGE_VERSION/g" >> ./env-config
+          echo "BUILD_NUMBER=30758" >> ./env-config
+          cat ./env-config
