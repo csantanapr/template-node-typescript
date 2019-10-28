@@ -414,13 +414,3 @@ spec:
         inputs:
           - name: source
             resource: git-source
----
-apiVersion: tekton.dev/v1alpha1
-kind: PipelineResource
-metadata:
-  name: node-typescript-git
-spec:
-  type: git
-  params:
-    - name: url
-      value: https://github.com/csantanapr/template-node-typescript.git
