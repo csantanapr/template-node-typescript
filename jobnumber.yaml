@@ -16,7 +16,7 @@ spec:
         - -c
         - |
           BUILD_NUMBER=`echo $BUILD_NUMBER | awk -F 'run-' '{print $NF}'`
-          echo "BUILD_NUMBER=${BUILD_NUMBER} "
+          echo "BUILD_NUMBER=${BUILD_NUMBER}"
 ---
 apiVersion: tekton.dev/v1alpha1
 kind: Task
