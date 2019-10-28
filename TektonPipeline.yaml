@@ -268,7 +268,7 @@ spec:
           echo "Could not reach health endpoint: http://${INGRESS_HOST}:${PORT}/health"
               exit 1;
           fi;
-    - name: package-helm-chart
+    - name: helm-chart
       image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
       workingdir: ${inputs.resources.source.path}
       volumeMounts:
