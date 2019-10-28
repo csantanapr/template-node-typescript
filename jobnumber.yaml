@@ -1,0 +1,52 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: task1
+spec:
+  steps:
+    - name: one
+      image: ubuntu
+      env:
+        - name: BUILD_NUMBER
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          BUILD_NUMBER=`echo $BUILD_NUMBER | awk -F 'run-' '{print $NF}'`
+          echo "BUILD_NUMBER=${BUILD_NUMBER}"
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: task2
+spec:
+  steps:
+    - name: one
+      image: ubuntu
+      env:
+        - name: BUILD_NUMBER
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['tekton.dev/pipelineRun']
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          BUILD_NUMBER=`echo $BUILD_NUMBER | awk -F 'run-' '{print $NF}'`
+          echo "BUILD_NUMBER=${BUILD_NUMBER}"
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: my-pipe
+spec:
+  tasks:
+    - name: task1
+      taskRef:
+        name: task1
+    - name: task2
+      taskRef:
+        name: task2
