@@ -1,7 +1,7 @@
 apiVersion: tekton.dev/v1alpha1
 kind: Task
 metadata:
-  name: node-typescript-task
+  name: node-typescript
 spec:
   inputs:
     resources:
@@ -347,11 +347,61 @@ spec:
 
           # Persist the Helm Chart in Artifactory for us by ArgoCD
           curl -u${ARTIFACTORY_USER}:${ARTIFACTORY_ENCRPT} -i -vvv -T index.yaml "${URL}/${REGISTRY_NAMESPACE}/index.yaml"
+    - name: gitops
+      image: docker.io/garagecatalyst/ibmcloud-dev:1.0.8
+      workingdir: ${inputs.resources.source.path}
+      env:
+        - name: CHART_NAME
+          value: template-node-typescript
+      command: ["/bin/bash"]
+      args:
+        - -c
+        - |
+          if [[ -z "${GITOPS_CD_URL}" ]]; then
+              exit 0
+          fi
+          if [[ -z "${GITOPS_CD_BRANCH}" ]]; then
+              GITOPS_CD_BRANCH="master"
+          fi
+
+          . ./env-config
+
+          if [[ -n "${BUILD_NUMBER}" ]]; then
+            IMAGE_BUILD_VERSION="${IMAGE_VERSION}-${BUILD_NUMBER}"
+          fi
+
+          # This email is not used and it not valid, you can ignore but git requires it
+          git config --global user.email "jenkins@ibmcloud.com"
+          git config --global user.name "Jenkins Pipeline"
+
+          git clone -b ${GITOPS_CD_BRANCH} ${GITOPS_CD_URL} gitops_cd
+          cd gitops_cd
+
+          echo "Requirements before update"
+          cat "./${IMAGE_NAME}/requirements.yaml"
+
+          # Read the helm repo
+          HELM_REPO=$(yq r ./${IMAGE_NAME}/requirements.yaml 'dependencies[0].repository')
+
+          # Write the updated requirements.yaml
+          echo "dependencies:" > ./requirements.yaml.tmp
+          echo "  - name: ${CHART_NAME}" >> ./requirements.yaml.tmp
+          echo "    version: ${IMAGE_BUILD_VERSION}" >> ./requirements.yaml.tmp
+          echo "    repository: ${HELM_REPO}" >> ./requirements.yaml.tmp
+
+          cp ./requirements.yaml.tmp "./${IMAGE_NAME}/requirements.yaml"
+
+          echo "Requirements after update"
+          cat "./${IMAGE_NAME}/requirements.yaml"
+
+          git add -u
+          git commit -m "Updates ${IMAGE_NAME} to ${IMAGE_BUILD_VERSION}"
+          git push
 ---
 apiVersion: tekton.dev/v1alpha1
 kind: Pipeline
 metadata:
-  name: node-typescript-pipeline
+  name: node-typescript
 spec:
   resources:
     - name: git-source
@@ -359,7 +409,7 @@ spec:
   tasks:
     - name: node-typescript
       taskRef:
-        name: node-typescript-task
+        name: node-typescript
       resources:
         inputs:
           - name: source
@@ -374,29 +424,3 @@ spec:
   params:
     - name: url
       value: https://github.com/csantanapr/template-node-typescript.git
----
-apiVersion: tekton.dev/v1alpha1
-kind: Task
-metadata:
-  name: node-typescript-task-tmp
-spec:
-  inputs:
-    resources:
-      - name: source
-        type: git
-  steps:
-    - name: setup
-      image: node:11-stretch
-      workingdir: ${inputs.resources.source.path}
-      command: ["/bin/bash"]
-      args:
-        - -c
-        - |
-          env | sort
-          ls
-          set -x
-          # Export project name, version, and build number to ./env-config
-          npm run env | grep "^npm_package_name" | sed "s/npm_package_name/IMAGE_NAME/g"  > ./env-config
-          npm run env | grep "^npm_package_version" | sed "s/npm_package_version/IMAGE_VERSION/g" >> ./env-config
-          echo "BUILD_NUMBER=30758" >> ./env-config
-          cat ./env-config

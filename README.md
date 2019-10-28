@@ -63,6 +63,33 @@ Use the IBM Garage for Cloud CLI to register the GIT Repo with Jenkins environme
 igc register
 ```
 
+### Using Tekton pipeline
+
+Create pipeline for each environment for example `dev` namespace
+```bash
+kubectl create -f TektonPipeline.yaml -n dev
+```
+
+You can test the pipeline using a `git` resource
+```yaml
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: node-typescript-git
+spec:
+  type: git
+  params:
+    - name: url
+      value: https://github.com/ibm-garage-cloud/template-node-typescript.git
+```
+
+Then create a `pipelinerun` using the `tkn` CLI
+```bash
+tkn pipeline start node-typescript -r git-source=node-typescript-git
+```
+
+You can also use the tekton dashboard to create a Git Webhook, to run the pipeline when a new git commit is pushed to the repository.
+
 ## Next Steps
 
 * Learn more about augmenting your Node.js applications on IBM Cloud with the [Node Programming Guide](https://cloud.ibm.com/docs/node?topic=nodejs-getting-started).
