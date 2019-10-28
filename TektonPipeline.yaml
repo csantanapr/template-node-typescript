@@ -358,6 +358,7 @@ spec:
         - -c
         - |
           if [[ -z "${GITOPS_CD_URL}" ]]; then
+              echo "Skipping GITOPS step as GITOPS_CD_URL is not installed or configured"
               exit 0
           fi
           if [[ -z "${GITOPS_CD_BRANCH}" ]]; then
