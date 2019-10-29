@@ -8,6 +8,8 @@ spec:
   params:
     - name: url
       value: https://github.com/csantanapr/template-node-typescript.git
+    - name: revision
+      value: "tekton-playground"
 ---
 apiVersion: tekton.dev/v1alpha1
 kind: PipelineResource
