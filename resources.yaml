@@ -1,0 +1,20 @@
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: csantana-nodejs-git
+spec:
+  type: git
+  params:
+    - name: url
+      value: https://github.com/csantanapr/template-node-typescript.git
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: csantana-nodejs-image
+spec:
+  type: image
+  params:
+    - name: url
+      value: docker-registry.default.svc:5000/csantana/appsody-sample-nodejs-express:tkn

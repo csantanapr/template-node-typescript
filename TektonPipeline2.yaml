@@ -1,0 +1,16 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: node-typescript-2
+spec:
+  resources:
+    - name: git-source
+      type: git
+  tasks:
+    - name: js-test
+      taskRef:
+        name: js-test
+      resources:
+        inputs:
+          - name: source
+            resource: git-source
