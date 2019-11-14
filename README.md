@@ -77,6 +77,7 @@ git clone https://github.com/ibm-garage-cloud/ibm-garage-iteration-zero.git
 kubectl -f ibm-garage-iteration-zero/tekton -n dev
 ```
 
+
 Use the tekton dashboard to create a Git Webhook on the `dev` namespace, this will run the pipeline when a new git commit is pushed to the repository.
 
 ## Next Steps
